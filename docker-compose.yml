@@ -1,0 +1,19 @@
+services:
+  vscode:
+    build: .
+    ports:
+      - "5901:5901"
+    environment:
+      VNC_PASSWORD: secret12
+      HOME: /home/ubuntu
+      CLAUDE_CONFIG_DIR: /home/ubuntu/.claude
+    volumes:
+      - /home/lab/projects:/workspace:Z
+      - ${HOME}/.claude:/home/ubuntu/.claude:Z
+      - ${HOME}/.config/claude:/home/ubuntu/.config/claude:Z
+      - vscode-config:/home/ubuntu/.config/Code
+      - vscode-extensions:/home/ubuntu/.vscode
+
+volumes:
+  vscode-config:
+  vscode-extensions:
