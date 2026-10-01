@@ -78,6 +78,8 @@ RUN curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
+RUN npm install --global opencode-ai
+
 RUN install -d -o "${USERNAME}" -g "${USERNAME}" /workspace
 
 # Programs launched when the VNC desktop starts. vncconfig provides clipboard
@@ -132,6 +134,37 @@ set -Eeuo pipefail
 
 : "${VNC_PASSWORD:?Set VNC_PASSWORD when starting the container}"
 
+opencode_config_dir="${HOME}/.config/opencode"
+mkdir -p "${opencode_config_dir}"
+if [[ ! -f "${opencode_config_dir}/opencode.json" ]]; then
+        cat > "${opencode_config_dir}/opencode.json" <<'OPENCODE_CONFIG'
+{
+    "$schema": "https://opencode.ai/config.json",
+    "model": "ollama/local",
+    "small_model": "ollama/local",
+    "provider": {
+        "ollama": {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": "Ollama (local)",
+            "options": {
+                "baseURL": "http://host.docker.internal:11434/v1"
+            },
+            "models": {
+                "local": {
+                    "id": "{env:OLLAMA_MODEL}",
+                    "name": "{env:OLLAMA_MODEL}",
+                    "limit": {
+                        "context": 131072,
+                        "output": 16384
+                    }
+                }
+            }
+        }
+    }
+}
+OPENCODE_CONFIG
+fi
+
 ssh_dir="${HOME}/.ssh"
 mkdir -p "${ssh_dir}"
 chmod 0700 "${ssh_dir}"
@@ -172,8 +205,8 @@ RUN install -d -o "${USERNAME}" -g "${USERNAME}" \
         "/home/${USERNAME}/.ssh" \
         "/home/${USERNAME}/.vscode" \
         "/home/${USERNAME}/.claude" \
-        "/home/${USERNAME}/.config/claude"
-
+        "/home/${USERNAME}/.config/claude" \
+        "/home/${USERNAME}/.config/opencode"
 USER ${USERNAME}
 RUN curl -fsSL https://claude.ai/install.sh | bash
 WORKDIR /workspace
