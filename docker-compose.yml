@@ -10,10 +10,15 @@ services:
     volumes:
       - /home/lab/projects:/workspace:Z
       - ${HOME}/.claude:/home/ubuntu/.claude:Z
-      - ${HOME}/.config/claude:/home/ubuntu/.config/claude:Z
+      - ${HOME}/.claude.json:/home/ubuntu/.claude.json:Z
+      - ${HOME}/.continue:/home/ubuntu/.continue:Z
       - vscode-config:/home/ubuntu/.config/Code
+      - ssh-keys-2:/home/ubuntu/.ssh
+      - xfce-config:/home/ubuntu/.config/xfce4
       - vscode-extensions:/home/ubuntu/.vscode
 
 volumes:
   vscode-config:
+  ssh-keys-2:
+  xfce-config:
   vscode-extensions:

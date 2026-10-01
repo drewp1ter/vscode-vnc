@@ -21,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         dbus-x11 \
+        build-essential \
         git \
         gnupg \
         openssh-client \
@@ -38,6 +39,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         xfce4-settings \
         xfdesktop4 \
         xfwm4 \
+        greybird-gtk-theme \
+        terminator \
+        xxd \
+        libwrap0-dev \
+        libpam0g-dev \
+        libpcap-dev \
+        zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Official Microsoft repository for VS Code.
@@ -53,6 +61,21 @@ RUN wget -qO- https://packages.microsoft.com/keys/microsoft.asc \
         > /etc/apt/sources.list.d/vscode.sources \
     && apt-get update \
     && apt-get install -y --no-install-recommends code \
+    && rm -rf /var/lib/apt/lists/*
+
+# Go from the official tarball. Leave GO_VERSION empty to use the latest
+# stable release, or pin it, e.g. --build-arg GO_VERSION=go1.25.1.
+ARG TARGETARCH
+ARG GO_VERSION=
+RUN go_version="${GO_VERSION:-$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -n1)}" \
+    && curl -fsSL "https://go.dev/dl/${go_version}.linux-${TARGETARCH:-amd64}.tar.gz" \
+        | tar -xz -C /usr/local
+ENV PATH="/usr/local/go/bin:/home/${USERNAME}/go/bin:${PATH}"
+
+# Node.js from the NodeSource repository (includes npm).
+ARG NODE_MAJOR=24
+RUN curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 RUN install -d -o "${USERNAME}" -g "${USERNAME}" /workspace
@@ -77,9 +100,14 @@ rm -rf "${HOME}/.cache/sessions"
 vncconfig -nowin &
 
 exec dbus-run-session -- sh -c '
-    xfsettingsd &
-    xfwm4 --replace &
-    xfdesktop &
+    theme_marker="$HOME/.config/xfce4/.dark-theme-configured"
+    if [ ! -e "$theme_marker" ]; then
+        xfconf-query --create -c xsettings -p /Net/ThemeName -t string -s Greybird-dark &&
+        xfconf-query --create -c xfwm4 -p /general/theme -t string -s Greybird-dark &&
+        touch "$theme_marker"
+    fi
+
+    startxfce4 &
 
     sleep 3
 
@@ -103,6 +131,15 @@ RUN cat > /usr/local/bin/start-vnc <<'EOF'
 set -Eeuo pipefail
 
 : "${VNC_PASSWORD:?Set VNC_PASSWORD when starting the container}"
+
+ssh_dir="${HOME}/.ssh"
+mkdir -p "${ssh_dir}"
+chmod 0700 "${ssh_dir}"
+if [[ ! -f "${ssh_dir}/id_ed25519" ]]; then
+    ssh-keygen -q -t ed25519 -N '' -C 'github-vscode-vnc' -f "${ssh_dir}/id_ed25519"
+    printf 'Generated GitHub SSH public key:\n'
+    cat "${ssh_dir}/id_ed25519.pub"
+fi
 
 display=":${DISPLAY_NUM}"
 vnc_dir="${HOME}/.vnc"
@@ -129,7 +166,10 @@ EOF
 RUN chmod 0755 /usr/local/bin/start-vnc
 
 RUN install -d -o "${USERNAME}" -g "${USERNAME}" \
+        "/home/${USERNAME}/.config" \
         "/home/${USERNAME}/.config/Code" \
+        "/home/${USERNAME}/.config/xfce4" \
+        "/home/${USERNAME}/.ssh" \
         "/home/${USERNAME}/.vscode" \
         "/home/${USERNAME}/.claude" \
         "/home/${USERNAME}/.config/claude"
