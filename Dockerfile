@@ -6,6 +6,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 ARG USERNAME=ubuntu
 ARG USER_UID=1000
 ARG USER_GID=1000
+ARG USER_PASSWORD=secret12
 
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
@@ -13,7 +14,8 @@ ENV LANG=C.UTF-8 \
     VNC_GEOMETRY=1920x1080 \
     VNC_DEPTH=24 \
     PATH="/home/${USERNAME}/.local/bin:${PATH}" \
-    CLAUDE_CONFIG_DIR="/home/${USERNAME}/.config/claude"
+    CLAUDE_CONFIG_DIR="/home/${USERNAME}/.config/claude" \
+    QWEN_CONFIG_DIR="/home/${USERNAME}/.qwen"
 
 # XFCE, TigerVNC and basic development/desktop utilities.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -42,6 +44,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         greybird-gtk-theme \
         terminator \
         xxd \
+        gdb \
+        strace \
+        ltrace \
+        nano \
         libwrap0-dev \
         libpam0g-dev \
         libpcap-dev \
@@ -71,14 +77,6 @@ RUN go_version="${GO_VERSION:-$(curl -fsSL 'https://go.dev/VERSION?m=text' | hea
     && curl -fsSL "https://go.dev/dl/${go_version}.linux-${TARGETARCH:-amd64}.tar.gz" \
         | tar -xz -C /usr/local
 ENV PATH="/usr/local/go/bin:/home/${USERNAME}/go/bin:${PATH}"
-
-# Node.js from the NodeSource repository (includes npm).
-ARG NODE_MAJOR=24
-RUN curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN npm install --global opencode-ai
 
 RUN install -d -o "${USERNAME}" -g "${USERNAME}" /workspace
 
@@ -206,9 +204,22 @@ RUN install -d -o "${USERNAME}" -g "${USERNAME}" \
         "/home/${USERNAME}/.vscode" \
         "/home/${USERNAME}/.claude" \
         "/home/${USERNAME}/.config/claude" \
-        "/home/${USERNAME}/.config/opencode"
+        "/home/${USERNAME}/.config/opencode" \
+        "/home/${USERNAME}/.qwen"
+RUN printf '%s:%s\n' "${USERNAME}" "${USER_PASSWORD}" | chpasswd
+RUN printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${USERNAME}" > "/etc/sudoers.d/${USERNAME}" \
+    && chmod 0440 "/etc/sudoers.d/${USERNAME}" \
+    && visudo -cf "/etc/sudoers.d/${USERNAME}"
+
 USER ${USERNAME}
-RUN curl -fsSL https://claude.ai/install.sh | bash
+RUN /bin/bash -c "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.8/install.sh | bash \ 
+    && source ${HOME}/.nvm/nvm.sh \
+    && nvm install 24 \
+    && npm install --global opencode-ai \
+    && npm install --global @qwen-code/qwen-code"
+
+RUN curl -fsSL https://claude.ai/install.sh | bash    
+RUN curl -fsSL https://vast.ai/install.sh | bash
 WORKDIR /workspace
 
 # DISPLAY_NUM=1 corresponds to TCP port 5901.

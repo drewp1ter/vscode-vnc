@@ -1,21 +1,30 @@
 services:
   vscode:
-    build: .
+    build:
+      context: .
+      args:
+        USER_PASSWORD: ${VNC_PASSWORD:-secret12}
     ports:
       - "5901:5901"
     environment:
-      VNC_PASSWORD: secret12
+      VNC_PASSWORD: ${VNC_PASSWORD:-secret12}
       HOME: /home/ubuntu
       CLAUDE_CONFIG_DIR: /home/ubuntu/.claude
+      QWEN_CONFIG_DIR: /home/ubuntu/.qwen
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-ollama}
+      QWEN_CODE_API_TIMEOUT_MS: 0
+      QWEN_STREAM_MAX_LIFETIME_MS: 0
+      QWEN_STREAM_IDLE_TIMEOUT_MS: 0
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - /home/lab/projects:/workspace:Z
+      - /home/lab/projects/m3dusa:/workspace:Z
       - ${HOME}/.claude:/home/ubuntu/.claude:Z
       - ${HOME}/.claude.json:/home/ubuntu/.claude.json:Z
       - ${HOME}/.continue:/home/ubuntu/.continue:Z
       - vscode-config:/home/ubuntu/.config/Code
       - opencode-config:/home/ubuntu/.config/opencode
+      - qwen-config:/home/ubuntu/.qwen
       - ssh-keys-2:/home/ubuntu/.ssh
       - xfce-config:/home/ubuntu/.config/xfce4
       - vscode-extensions:/home/ubuntu/.vscode
@@ -23,6 +32,7 @@ services:
 volumes:
   vscode-config:
   opencode-config:
+  qwen-config:
   ssh-keys-2:
   xfce-config:
   vscode-extensions:
