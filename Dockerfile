@@ -52,6 +52,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libpam0g-dev \
         libpcap-dev \
         zlib1g-dev \
+        zsh \
+        python3 \
+        python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 # Official Microsoft repository for VS Code.
@@ -219,7 +222,11 @@ RUN /bin/bash -c "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.8/
     && npm install --global @qwen-code/qwen-code"
 
 RUN curl -fsSL https://claude.ai/install.sh | bash    
-RUN curl -fsSL https://vast.ai/install.sh | bash
+# RUN curl -fsSL https://vast.ai/install.sh | bash
+COPY --chown=1000:1000 ./requirements.txt /tmp/requirements.txt
+RUN pip install --user --break-system-packages --no-cache-dir -r /tmp/requirements.txt
+COPY --chown=1000:1000 ./vast_order.py /home/ubuntu/
+RUN chmod +x /home/ubuntu/vast_order.py
 WORKDIR /workspace
 
 # DISPLAY_NUM=1 corresponds to TCP port 5901.

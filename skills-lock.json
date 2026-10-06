@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "vastai": {
+      "source": "vast-ai/vast-cli",
+      "sourceType": "github",
+      "skillPath": "vastai/SKILL.md",
+      "computedHash": "3b3f05af68358f90de10f7b7de35636763fb9bcd84430fd92c729115ec6ffbce"
+    }
+  }
+}
