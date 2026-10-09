@@ -204,7 +204,8 @@ def parse_args() -> argparse.Namespace:
                    help="$/hr bid for interruptible instances (default: the offer's suggested min bid)")
     p.add_argument("--order", default="dph_total", help="offer sort field")
     p.add_argument("--template-hash", default=DEFAULT_TEMPLATE_HASH,
-                   help="Vast template to launch (image, env and onstart come from it)")
+                   help="Vast template to launch (image, env and onstart come from it); "
+                        "if empty, you pick one of your own templates from a list")
     p.add_argument("--disk", type=float, default=48, help="disk size in GB")
     p.add_argument("--label", default="auto-order", help="instance label")
     p.add_argument("--remote-cmd", default=DEFAULT_REMOTE_CMD,
@@ -229,8 +230,6 @@ def parse_args() -> argparse.Namespace:
     args = p.parse_args()
     args.gpu = [normalize_gpu(g) for g in args.gpu]
     args.ssh_key = Path(args.ssh_key).expanduser()
-    if not args.template_hash:
-        p.error("a template hash is required (--template-hash or DEFAULT_TEMPLATE_HASH)")
     # The instance is only reached over SSH when a command or tunnel is requested.
     args.use_ssh = bool(args.remote_cmd.strip() or args.tunnel_port)
     return args
@@ -384,6 +383,33 @@ def check_port_free(port: int) -> None:
                 f"local port {port} is already in use ({exc}); "
                 "stop what is listening there or pass --tunnel-port"
             ) from exc
+
+
+def pick_template(vast: VastAI) -> str:
+    """List the account's own templates and let the user choose one; returns its hash."""
+    if not sys.stdin.isatty():
+        raise OrderError("no template given: pass --template-hash or set DEFAULT_TEMPLATE_HASH")
+    try:
+        user_id = vast.show_user().get("id")
+        templates = vast.search_templates(f"creator_id={user_id}")
+    except Exception as exc:
+        raise OrderError(f"could not fetch your templates: {error_text(exc)}") from exc
+    templates = [t for t in templates if t.get("hash_id")]
+    if not templates:
+        raise OrderError("you have no templates; create one at https://cloud.vast.ai/templates/")
+    templates.sort(key=lambda t: (t.get("name") or "").lower())
+    for i, t in enumerate(templates, 1):
+        image = f"{t.get('image')}:{t.get('tag') or t.get('default_tag') or 'latest'}"
+        print(f"{i:3d}) {t.get('name') or '(unnamed)'}  [{image}]  {t['hash_id']}", file=sys.stderr)
+    while True:
+        try:
+            answer = input(f"Select template [1-{len(templates)}]: ").strip()
+        except EOFError:
+            raise OrderError("no template selected") from None
+        if answer.isdigit() and 1 <= int(answer) <= len(templates):
+            chosen = templates[int(answer) - 1]
+            log.info("using template %r (%s)", chosen.get("name"), chosen["hash_id"])
+            return chosen["hash_id"]
 
 
 # --- Search / rent / boot -----------------------------------------------------
@@ -644,6 +670,13 @@ def main() -> int:
         log.error("cannot create Vast client: %s. Run `vastai set api-key <KEY>` "
                   "or set VAST_API_KEY.", exc)
         return 1
+
+    if not args.template_hash:
+        try:
+            args.template_hash = pick_template(vast)
+        except (OrderError, KeyboardInterrupt) as exc:
+            log.error("%s", exc or "interrupted")
+            return 1
 
     state: dict = {"instance_id": None}
     blacklist = Blacklist(BLACKLIST_FILE)
