@@ -45,6 +45,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         terminator \
         xxd \
         gdb \
+        clang \ 
+        clang-tidy \
+        cppcheck \
+        valgrind \
+        bear \
+        file \
         strace \
         ltrace \
         nano \
