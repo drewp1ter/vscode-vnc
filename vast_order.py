@@ -201,7 +201,7 @@ def parse_args() -> argparse.Namespace:
                    default=DEFAULT_OFFER_TYPE,
                    help="interruptible = cheaper spot instance that can be preempted")
     p.add_argument("--bid-price", type=float, default=None,
-                   help="$/hr bid for interruptible instances (default: --max-price)")
+                   help="$/hr bid for interruptible instances (default: the offer's suggested min bid)")
     p.add_argument("--order", default="dph_total", help="offer sort field")
     p.add_argument("--template-hash", default=DEFAULT_TEMPLATE_HASH,
                    help="Vast template to launch (image, env and onstart come from it)")
@@ -287,6 +287,15 @@ def describe_offer(offer: dict) -> str:
     )
 
 
+def bid_price(args: argparse.Namespace, offer: dict) -> float | None:
+    """$/hr bid for an interruptible offer: --bid-price, else the offer's suggested minimum bid."""
+    if args.offer_type != "interruptible":
+        return None
+    if args.bid_price:
+        return args.bid_price
+    return offer.get("min_bid") or args.max_price
+
+
 def log_order(args: argparse.Namespace, instance_id: int, offer: dict) -> None:
     """Append one JSON line per rented order to ORDER_LOG_FILE."""
     record = {
@@ -297,7 +306,7 @@ def log_order(args: argparse.Namespace, instance_id: int, offer: dict) -> None:
         "host_id": offer.get("host_id"),
         "cost_per_hour": offer.get("dph_total"),
         "type": args.offer_type,
-        "bid_price": (args.bid_price or args.max_price) if args.offer_type == "interruptible" else None,
+        "bid_price": bid_price(args, offer),
         "gpu": offer.get("gpu_name"),
         "num_gpus": offer.get("num_gpus"),
         "gpu_ram_mb": offer.get("gpu_ram"),
@@ -405,8 +414,10 @@ def find_and_rent(vast: VastAI, args: argparse.Namespace, query: str,
                 print(f"[dry-run] would rent {describe_offer(offer)}")
                 return None
             # An interruptible instance is created by naming a bid price.
-            bid = ({"price": args.bid_price or args.max_price}
-                   if args.offer_type == "interruptible" else {})
+            price = bid_price(args, offer)
+            bid = {"price": price} if price else {}
+            if price:
+                log.info("bidding $%.3f/hr", price)
             try:
                 resp = vast.create_instance(
                     offer["id"], template_hash=args.template_hash, disk=args.disk,
