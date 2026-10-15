@@ -12,6 +12,7 @@ Requires the `vastai` package (pip install -r requirements.txt) and an API key
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import shutil
@@ -38,17 +39,14 @@ DEFAULT_GPUS = []  # accepted GPU models (--gpu)
 DEFAULT_NUM_GPUS = 1  # GPUs per instance (--num-gpus)
 DEFAULT_MIN_GPU_RAM = 0  # min RAM per GPU in GB, 0 = any (--min-gpu-ram)
 DEFAULT_OFFER_TYPE = "on-demand"  # or "interruptible" (--type)
-DEFAULT_MAX_PRICE = 0.40  # max total $/hr (--max-price)
-DEFAULT_MAX_DOWNLOAD_TB_COST = 3.12  # max internet download cost, $/TB (--max-download-tb-cost)
-
-DEFAULT_TEMPLATE_HASH = ""  # https://cloud.vast.ai/template/readme/<hash>
-# Optional SSH steps after the instance is running; leave empty/0 to just start it.
-DEFAULT_REMOTE_CMD = "ollama pull robit/qwen3.8-27b-obliterated-e03:27b"  # command run over SSH once the instance is ready
-DEFAULT_TUNNEL_PORT = 11434  # forwarded as localhost:PORT -> instance:PORT
+DEFAULT_MAX_PRICE = 0.30  # max total $/hr (--max-price)
+DEFAULT_MAX_DOWNLOAD_TB_COST = 3  # max internet download cost, $/TB (--max-download-tb-cost)
 
 # -----------------------------------------------------------------------------
 
-VAST_TYPES = {"on-demand": "on-demand", "interruptible": "bid"}  # --type -> API search type
+NO_AUTO_TMUX = "touch ~/.no_auto_tmux"  # tells Vast images not to start tmux on SSH login
+
+VAST_TYPES = {"on-demand": "on-demand", "bid": "bid"}  # --type -> API search type
 ORDER_LOG_FILE = Path(__file__).with_name("vast.log")  # one JSON line per rented order
 BLACKLIST_FILE = Path(__file__).with_name("blacklist.jsonl")  # one JSON line per blacklisted order
 GB_PER_TB = 1024  # Vast prices bandwidth per GB; Vast's own UI shows $/TB as $/GB * 1024
@@ -129,6 +127,7 @@ class KeyWatcher:
         self.pressed = threading.Event()
         self._saved = None
         self._fd = None
+        self._lock = threading.Lock()  # held by the listener while it reads stdin
 
     def __enter__(self):
         if termios is None or not sys.stdin.isatty():
@@ -148,14 +147,29 @@ class KeyWatcher:
     def _listen(self) -> None:
         while True:
             try:
-                if select.select([self._fd], [], [], 0.2)[0]:
-                    ch = sys.stdin.read(1)
-                    if not ch:
-                        return
-                    if ch.lower() == self.key:
-                        self.pressed.set()
+                with self._lock:
+                    if select.select([self._fd], [], [], 0.2)[0]:
+                        ch = sys.stdin.read(1)
+                        if not ch:
+                            return
+                        if ch.lower() == self.key:
+                            self.pressed.set()
             except (OSError, ValueError):
                 return
+            time.sleep(0.01)  # let paused() grab the lock
+
+    @contextlib.contextmanager
+    def paused(self):
+        """Give the terminal back (cooked mode, no key listening), e.g. for an interactive ssh."""
+        if self._saved is None:
+            yield
+            return
+        with self._lock:
+            termios.tcsetattr(self._fd, termios.TCSADRAIN, self._saved)
+            try:
+                yield
+            finally:
+                tty.setcbreak(self._fd)
 
     def check(self) -> None:
         if self.pressed.is_set():
@@ -197,25 +211,28 @@ def parse_args() -> argparse.Namespace:
                    help="max internet download cost in $/TB of downloaded data (negative = no filter)")
     p.add_argument("--extra-query", default="",
                    help="extra Vast filter terms, e.g. 'geolocation=EU reliability>0.98'")
-    p.add_argument("--type", dest="offer_type", choices=["on-demand", "interruptible"],
+    p.add_argument("--type", dest="offer_type", choices=["1", "2"],
                    default=DEFAULT_OFFER_TYPE,
-                   help="interruptible = cheaper spot instance that can be preempted")
+                   help="2 is interruptible = cheaper spot instance that can be preempted")
     p.add_argument("--bid-price", type=float, default=None,
                    help="$/hr bid for interruptible instances (default: the offer's suggested min bid)")
     p.add_argument("--order", default="dph_total", help="offer sort field")
-    p.add_argument("--template-hash", default=DEFAULT_TEMPLATE_HASH,
+    p.add_argument("--template-hash", default="",
                    help="Vast template to launch (image, env and onstart come from it); "
-                        "if empty, you pick one of your own templates from a list")
+                        "if omitted, you pick one of your own templates from a list")
     p.add_argument("--disk", type=float, default=48, help="disk size in GB")
     p.add_argument("--label", default="auto-order", help="instance label")
-    p.add_argument("--remote-cmd", default=DEFAULT_REMOTE_CMD,
+    p.add_argument("--remote-cmd", default="",
                    help="command run over SSH once the instance is ready ('' to skip)")
-    p.add_argument("--tunnel-port", type=int, default=DEFAULT_TUNNEL_PORT,
+    p.add_argument("--pre-cmd", default="",
+                   help="command run on the instance before the interactive shell "
+                        "(ignored when --remote-cmd is set)")
+    p.add_argument("--tunnel-port", type=int, default=0,
                    help="port forwarded from localhost to the instance (0 to disable)")
     p.add_argument("--ssh-key", default="~/.ssh/id_ed25519",
                    help="SSH private key; its .pub is registered with Vast if missing")
-    p.add_argument("--destroy-on-exit", action="store_true",
-                   help="destroy the instance when the script exits")
+    p.add_argument("--keep-on-exit", action="store_true",
+                   help="leave the instance running when the script exits (default: destroy it)")
     p.add_argument("--interval", type=float, default=30,
                    help="seconds between offer searches")
     p.add_argument("--timeout", type=float, default=0,
@@ -231,7 +248,7 @@ def parse_args() -> argparse.Namespace:
     args.gpu = [normalize_gpu(g) for g in args.gpu]
     args.ssh_key = Path(args.ssh_key).expanduser()
     # The instance is only reached over SSH when a command or tunnel is requested.
-    args.use_ssh = bool(args.remote_cmd.strip() or args.tunnel_port)
+    args.use_ssh = bool(args.remote_cmd.strip() or args.pre_cmd.strip() or args.tunnel_port)
     return args
 
 
@@ -388,7 +405,7 @@ def check_port_free(port: int) -> None:
 def pick_template(vast: VastAI) -> str:
     """List the account's own templates and let the user choose one; returns its hash."""
     if not sys.stdin.isatty():
-        raise OrderError("no template given: pass --template-hash or set DEFAULT_TEMPLATE_HASH")
+        raise OrderError("no template given: pass --template-hash or run in an interactive terminal")
     try:
         user_id = vast.show_user().get("id")
         templates = vast.search_templates(f"creator_id={user_id}")
@@ -559,39 +576,33 @@ def wait_for_ssh(vast: VastAI, instance_id: int, inst: dict, key_path: Path,
             log.warning("status check failed: %s", error_text(exc))
 
 
-def run_remote(key_path: Path, endpoint: tuple[str, int], command: str, keys: KeyWatcher) -> int:
-    if command.lstrip().startswith("ollama"):
-        # onstart launches the server in the background; don't race it.
-        command = f"until ollama list >/dev/null 2>&1; do sleep 2; done; {command}"
-    log.info("running on instance: %s", command)
-    # No ssh TTY: the key watcher owns the terminal's stdin.
-    return keys.run(ssh_base(key_path, *endpoint) + [command])
+def run_ssh_session(key_path: Path, endpoint: tuple[str, int], command: str, pre_cmd: str,
+                    tunnel_port: int, keys: KeyWatcher) -> int:
+    """One ssh process for the whole session; the -L tunnel lives exactly as long as it does.
 
-
-def hold_tunnel(vast: VastAI, instance_id: int, key_path: Path,
-                endpoint: tuple[str, int], port: int, keys: KeyWatcher) -> None:
-    """Keep `ssh -L` up until interrupted, reconnecting while the instance is running."""
+    With a command: run it and return its exit code.
+    Without: interactive login shell (after `pre_cmd`, if any), returns when the user logs out.
+    """
     cmd = ssh_base(key_path, *endpoint)
-    cmd[1:1] = ["-N", "-L", f"127.0.0.1:{port}:localhost:{port}",
-                "-o", "ExitOnForwardFailure=yes"]
-    while True:
-        log.info("tunnel open: http://localhost:%s -> instance %s (Ctrl-C to close)",
-                 port, instance_id)
-        rc = keys.run(cmd)
-        log.warning("tunnel closed (ssh exit code %s)", rc)
-        keys.sleep(SSH_RETRY_SECONDS)
-        try:
-            inst = vast.show_instance(instance_id) or {}
-        except Exception as exc:
-            log.warning("status check failed: %s", error_text(exc))
-            continue
-        if inst.get("actual_status") != "running":
-            raise OrderError(
-                f"instance {instance_id} is no longer running "
-                f"(status: {inst.get('actual_status')}); tunnel not restored"
-            )
-        endpoint = ssh_endpoint(inst) or endpoint
-        log.info("reconnecting tunnel")
+    if tunnel_port:
+        cmd[1:1] = ["-L", f"127.0.0.1:{tunnel_port}:localhost:{tunnel_port}"]
+        log.info("tunnel: http://localhost:%s -> instance (closed when ssh exits)", tunnel_port)
+    if command:
+        if command.lstrip().startswith("ollama"):
+            # onstart launches the server in the background; don't race it.
+            command = f"until ollama list >/dev/null 2>&1; do sleep 2; done; {command}"
+        log.info("running on instance: %s", command)
+        # No ssh TTY: the key watcher owns the terminal's stdin.
+        return keys.run(cmd + [f"{NO_AUTO_TMUX}; {command}"])
+    cmd.insert(1, "-t")
+    if pre_cmd:
+        log.info("running on instance before the shell: %s", pre_cmd)
+    # The marker must exist before the login shell starts, or Vast's profile script opens tmux.
+    pre = f"{NO_AUTO_TMUX}; {pre_cmd}" if pre_cmd else NO_AUTO_TMUX
+    cmd.append(f'{pre}; exec "${{SHELL:-bash}}" -l')
+    log.info("logging in; the session ends when you exit the shell")
+    with keys.paused():
+        return subprocess.run(cmd).returncode
 
 
 # --- Main ---------------------------------------------------------------------
@@ -628,7 +639,10 @@ def run(vast: VastAI, args: argparse.Namespace, state: dict,
                             instance_id)
                 skip_machines.add(offer.get("machine_id"))
             else:
-                return use_instance(vast, args, instance_id, offer, inst, keys)
+                code = use_instance(vast, args, instance_id, offer, inst, keys)
+                if not args.use_ssh:
+                    state["instance_id"] = None  # nothing to wait for: it is yours to use and destroy
+                return code
         except Blacklisted:
             blacklist.add(offer)
             log.warning("blacklisted order %s (machine %s); cancelling it and searching again",
@@ -648,15 +662,13 @@ def use_instance(vast: VastAI, args: argparse.Namespace, instance_id: int, offer
     endpoint = wait_for_ssh(vast, instance_id, inst, args.ssh_key, keys)
     print(f"{summary} -- ssh -i {args.ssh_key} -p {endpoint[1]} root@{endpoint[0]}", flush=True)
 
-    if args.remote_cmd.strip():
-        rc = run_remote(args.ssh_key, endpoint, args.remote_cmd, keys)
-        if rc != 0:
-            log.error("remote command failed with exit code %s", rc)
-            return 1
-        log.info("remote command finished")
-
-    if args.tunnel_port:
-        hold_tunnel(vast, instance_id, args.ssh_key, endpoint, args.tunnel_port, keys)
+    # The tunnel belongs to the ssh process, so it is closed when the session ends.
+    # The instance itself is destroyed by main() unless --keep-on-exit is set.
+    rc = run_ssh_session(args.ssh_key, endpoint, args.remote_cmd.strip(),
+                         args.pre_cmd.strip(), args.tunnel_port, keys)
+    if rc != 0:
+        log.error("ssh session ended with exit code %s", rc)
+        return 1
     return 0
 
 
@@ -692,7 +704,7 @@ def main() -> int:
 
     instance_id = state["instance_id"]
     if instance_id:
-        if args.destroy_on_exit:
+        if not args.keep_on_exit:
             destroy(vast, instance_id)
         else:
             log.warning("instance %s is STILL RUNNING and billing. Destroy it with: "

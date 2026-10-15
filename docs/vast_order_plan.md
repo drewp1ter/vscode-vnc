@@ -59,7 +59,7 @@ filters are logged at startup so it's always clear what will be rented.
 | `--remote-cmd` | `DEFAULT_REMOTE_CMD` | Command run over SSH after boot; script waits for it. `''` skips |
 | `--tunnel-port` | `DEFAULT_TUNNEL_PORT` | `-L PORT:localhost:PORT`. `0` disables the tunnel |
 | `--ssh-key` | `~/.ssh/id_ed25519` | Private key (its `.pub` is registered with Vast if missing) |
-| `--destroy-on-exit` | off | Destroy the instance when the tunnel is closed (Ctrl-C) |
+| `--keep-on-exit` | off | Leave the instance running on exit (default: destroy it when the session ends) |
 | `--disk` | `20` | GB |
 | `--label` | `auto-order` | instance label |
 | `--env` | none | passed through |
@@ -113,7 +113,7 @@ gpu_name in [RTX_4090,RTX_3090] num_gpus=1 dph_total<=0.45 direct_port_count>=1 
    and fail with a clear message if not. If ssh drops while the instance is still `running`,
    reconnect after 5 s. Runs until Ctrl-C.
 8. **Exit / Ctrl-C**: the instance keeps running (and billing) by default — the script prints its ID
-   and `vastai destroy instance <id> -y`. With `--destroy-on-exit` it is destroyed instead. Applies
+   and `vastai destroy instance <id> -y`. Without `--keep-on-exit` it is destroyed instead. Applies
    at any stage after creation. Exit 130 on interrupt.
 
 Common SSH options: `-i <key> -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=~/.ssh/known_hosts
@@ -153,4 +153,4 @@ Logging via `logging` with timestamps to stderr; the final result line goes to s
    GPUs, names with spaces) to confirm it parses to the expected filter dict.
 5. Real rental (spends credits, so I'll ask before running it): run without `--dry-run`; expect the
    pull progress to stream, then `curl http://localhost:11434/api/tags` in another shell lists `qwen3`
-   through the tunnel. Ctrl-C, then `vastai destroy instance <id> -y` (or use `--destroy-on-exit`).
+   through the tunnel. Ctrl-C, then `vastai destroy instance <id> -y` (destroyed automatically unless `--keep-on-exit` is set).
